@@ -2,3 +2,5 @@
 *.json
 *.log
 uv.lock
+Music
+__pycache__
