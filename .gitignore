@@ -1,6 +1,37 @@
-.venv
-*.json
-*.log
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# Project-specific
 uv.lock
-Music
-__pycache__
+Music/
+
+# IDE
+*.swp
+*.swo
+*.swn
+*~
+.DS_Store
