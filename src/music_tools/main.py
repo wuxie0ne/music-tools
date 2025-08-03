@@ -1,437 +1,260 @@
-import requests
 import os
-import re
-import argparse
-import json
-from mutagen.mp3 import MP3
-from mutagen.id3 import ID3, TIT2, TPE1, TALB, APIC, USLT
-from mutagen.flac import FLAC, Picture
-from rich.progress import (
-    Progress,
-    BarColumn,
-    TextColumn,
-    TimeRemainingColumn,
-    TransferSpeedColumn,
-)
-from rich.console import Console
-from rich.table import Table
 
-from .netease_api import search_music, get_music_details, get_lyrics
+from textual import work
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.containers import Horizontal, Vertical
+from textual.widgets import DataTable, Footer, Header, Static, Tree
 
+from .api import netease
+from .library.local import format_duration, scan_library
+from .player.player import Player
+from .playlist.manager import PlaylistItem, PlaylistManager
+from .tui.actions import play_song
+from .tui.screens.add_to_playlist import AddToPlaylistScreen
+from .tui.screens.playlist import PlaylistScreen
+from .tui.screens.search import SearchScreen
 
-def format_duration(ms):
-    """Converts milliseconds to a MM:SS format string."""
-    seconds = int(ms / 1000)
-    minutes = seconds // 60
-    seconds %= 60
-    return f"{minutes:02d}:{seconds:02d}"
+MUSIC_LIBRARY_PATH = os.path.expanduser("~/Music")
 
 
-def display_songs(songs, console, page_number):
-    """Display songs in a rich table with page number."""
-    if not songs:
-        console.print("No songs to display.", style="bold red")
-        return
+class MusicApp(App[None]):
+    """A Textual music application."""
 
-    table = Table(show_header=True, header_style="bold magenta")
-    table.add_column("Index", style="dim", width=6)
-    table.add_column("Title")
-    table.add_column("Artist")
-    table.add_column("Album")
-    table.add_column("Duration", justify="right")
+    TITLE = "Music Tools"
+    SUB_TITLE = "Terminal Music Hub"
+    CSS_PATH = "tui/app.css"
 
-    for i, song in enumerate(songs):
-        artists = ", ".join([artist["name"] for artist in song["artists"]])
-        duration = format_duration(song.get("duration", 0))
-        table.add_row(
-            str(i + 1), song["name"], artists, song["album"]["name"], duration
+    BINDINGS = [
+        Binding("d", "toggle_dark", "Toggle dark mode"),
+        Binding("q", "quit", "Quit"),
+        Binding("s", "show_search_screen", "Search", show=True),
+        Binding("space", "playback_play_pause", "Play/Pause", show=True),
+        Binding("enter", "playback_play_selected", "Play Selected", show=False),
+        Binding("a", "add_to_playlist", "Add to Playlist"),
+    ]
+
+    def __init__(self):
+        super().__init__()
+        self.player = Player()
+        self.playlist_manager = PlaylistManager()
+        self.netease_api = netease
+        self.library_songs: list = []
+        self.playback_timer = None
+        self.current_playing_info: dict = {}
+        self._is_scanning = False
+
+    def compose(self) -> ComposeResult:
+        """Create child widgets for the app."""
+        yield Header()
+        with Horizontal():
+            with Vertical(id="left-pane"):
+                yield Tree("Navigation")
+            with Vertical(id="main-pane"):
+                yield DataTable()
+        yield Static("Playback Bar", id="playback-bar")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        """Called when the app is mounted."""
+        nav_tree = self.query_one(Tree)
+        nav_tree.root.expand()
+        library_node = nav_tree.root.add("Library", data="library")
+        self.playlists_node = nav_tree.root.add("Playlists", data=None, expand=True)
+        self.update_playlist_tree()
+        nav_tree.root.add("Search", data="search")
+
+        table = self.query_one(DataTable)
+        table.add_columns("Title", "Artist", "Album", "Duration", "Source")
+
+        nav_tree.select_node(library_node)
+        self.load_library()
+
+        if not self.player.is_available:
+            self.show_player_error()
+        self.playback_timer = self.set_interval(1, self.update_playback_bar, pause=True)
+
+    def update_playback_bar(self) -> None:
+        """Updates the playback progress bar when a song is playing."""
+        if not self.player.is_playing:
+            self.playback_timer.pause()
+            self.query_one("#playback-bar", Static).update("⏹️ Stopped")
+            self.current_playing_info = {}
+            return
+
+        current, total = self.player.get_current_progress()
+
+        progress_bar_width = 20
+        bar = " (duration unknown)"
+        if total > 0:
+            percent = current / total
+            filled_len = int(progress_bar_width * percent)
+            bar = f" [{'█' * filled_len}{'─' * (progress_bar_width - filled_len)}]"
+
+        title = self.current_playing_info.get("title", "Unknown Title")
+        artist = self.current_playing_info.get("artist", "Unknown Artist")
+        progress_text = f"{format_duration(current)} / {format_duration(total)}{bar}"
+
+        playback_bar = self.query_one("#playback-bar", Static)
+        playback_bar.update(
+            f"▶️ [bold cyan]{artist} - {title}[/bold cyan]{progress_text}"
         )
 
-    console.print(table)
-    console.print(f"· Page {page_number} ·", style="dim", justify="center")
+    def update_playlist_tree(self) -> None:
+        """Clears and repopulates the playlists in the navigation tree."""
+        # Clear existing playlist nodes, but not the main "Playlists" node itself
+        for node in list(self.playlists_node.children):
+            node.remove()
 
+        for name in self.playlist_manager.get_playlist_names():
+            # The data will be f"playlist_{name}" to distinguish it
+            self.playlists_node.add_leaf(name, data=f"playlist_{name}")
 
-def sanitize_filename(filename):
-    """Remove invalid characters from a filename."""
-    return re.sub(r'[\\/*?:"<>|]', "", filename)
+    def show_player_error(self):
+        playback_bar = self.query_one("#playback-bar", Static)
+        playback_bar.update(
+            "[bold red]Player Error:[/bold red] "
+            "ffplay not found. Please install FFmpeg."
+        )
 
+    def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
+        """Called when a node in the navigation tree is selected."""
+        node_data = event.node.data
+        if node_data == "library":
+            self.load_library()
+        elif node_data == "search":
+            self.action_show_search_screen()
+        elif isinstance(node_data, str) and node_data.startswith("playlist_"):
+            playlist_name = node_data.replace("playlist_", "", 1)
+            self.push_screen(PlaylistScreen(playlist_name, self.playlist_manager))
 
-def add_metadata(filename, song_details, console):
-    """根据歌曲详情为音频文件添加元数据。"""
-    file_ext = os.path.splitext(filename)[-1].lower()
+    def load_library(self):
+        """Clear table and start scanning the music library."""
+        if self._is_scanning:
+            return
+        self._is_scanning = True
+        table = self.query_one(DataTable)
+        table.clear()
+        self.library_songs = []
+        self.query_one(Header).sub_title = "Scanning Library..."
+        self.scan_music_directory()
 
-    try:
-        if file_ext == ".flac":
-            audio = FLAC(filename)
-            audio.delete()  # 清除旧标签
-            audio["TITLE"] = song_details["song"]
-            audio["ARTIST"] = song_details["singer"]
-            audio["ALBUM"] = song_details["album"]
-            lyrics = get_lyrics(song_details["id"])
-            if lyrics:
-                audio["LYRICS"] = lyrics
+    @work(exclusive=True, thread=True)
+    def scan_music_directory(self) -> None:
+        """Scans the music directory in a background thread."""
+        self.library_songs = list(scan_library(MUSIC_LIBRARY_PATH))
 
-            if song_details.get("cover"):
+        def update_ui():
+            table = self.query_one(DataTable)
+            if not table.is_attached:  # Check if widget is still mounted
+                return
+
+            self.query_one(Header).sub_title = f"Found {len(self.library_songs)} songs"
+            
+            # Since we cleared the table, we can safely add rows.
+            for song in self.library_songs:
+                duration_str = format_duration(song.duration)
                 try:
-                    image_response = requests.get(song_details["cover"])
-                    image_response.raise_for_status()
-                    image_data = image_response.content
-
-                    picture = Picture()
-                    picture.data = image_data
-                    picture.type = 3  # Cover (front)
-                    picture.mime = "image/jpeg"
-                    audio.add_picture(picture)
-                except requests.exceptions.RequestException as e:
-                    console.print(f"无法下载封面: {e}", style="bold yellow")
-
-        elif file_ext == ".mp3":
-            audio = MP3(filename, ID3=ID3)
-            try:
-                audio.add_tags()
-            except Exception:
-                pass
-            audio.tags.add(TIT2(encoding=3, text=song_details["song"]))
-            audio.tags.add(TPE1(encoding=3, text=song_details["singer"]))
-            audio.tags.add(TALB(encoding=3, text=song_details["album"]))
-
-            lyrics = get_lyrics(song_details["id"])
-            if lyrics:
-                audio.tags.add(USLT(encoding=3, lang="eng", desc="desc", text=lyrics))
-
-            if song_details.get("cover"):
-                try:
-                    image_response = requests.get(song_details["cover"])
-                    image_response.raise_for_status()
-                    image_data = image_response.content
-                    audio.tags.add(
-                        APIC(
-                            encoding=3,
-                            mime="image/jpeg",
-                            type=3,
-                            desc="Cover",
-                            data=image_data,
-                        )
+                    table.add_row(
+                        song.title, song.artist, song.album, duration_str, key=song.filepath
                     )
-                except requests.exceptions.RequestException as e:
-                    console.print(f"无法下载封面: {e}", style="bold yellow")
+                except DuplicateKey:
+                    # This should ideally not happen with the new logic,
+                    # but as a safeguard, we can log or ignore it.
+                    self.log(f"Attempted to add duplicate key: {song.filepath}")
 
-        else:
-            console.print(f"不支持的文件格式 {file_ext}，跳过元数据嵌入。")
+
+        self.call_from_thread(update_ui)
+        self.call_from_thread(setattr, self, "_is_scanning", False)
+    
+
+    def action_show_search_screen(self) -> None:
+        """Push the SearchScreen onto the app."""
+        self.push_screen(SearchScreen())
+
+    def action_playback_play_selected(self) -> None:
+        """Play the currently selected song in the DataTable."""
+        if not self.player.is_available:
+            self.show_player_error()
             return
 
-        audio.save()
-        console.print(
-            f"已成功为 '[bold cyan]{filename}[/bold cyan]' 添加元数据。",
-            style="bold green",
-        )
-    except Exception as e:
-        console.print(f"添加元数据时出错: {e}", style="bold red")
+        table = self.query_one(DataTable)
+        if table.cursor_row < 0:
+            return
 
+        song_filepath = table.cursor_row_key
 
-def download_song(song, console):
-    """获取歌曲详情，下载并添加元数据。"""
-    song_id = song["id"]
-    console.print(f"正在为歌曲 '{song['name']}' 获取下载详情...", style="dim")
-    song_details = get_music_details(song_id)
-
-    if not song_details or not song_details.get("url"):
-        console.print(f"无法获取 '{song['name']}' 的下载链接。跳过。", style="bold red")
-        return
-
-    # 从返回的url中提取文件格式
-    # 例如 http://.../xxx.flac?param=1 -> .flac
-    file_ext_match = re.search(r"\.(\w+)(\?|$)", song_details["url"])
-    file_ext = file_ext_match.group(1).lower() if file_ext_match else "mp3"
-
-    filename = sanitize_filename(
-        f"{song_details['singer'].replace('/', '&')} - {song_details['song']}.{file_ext}"
-    )
-    download_url = song_details["url"]
-
-    try:
-        with requests.get(download_url, stream=True, timeout=10) as r:
-            r.raise_for_status()
-            total_size = int(r.headers.get("content-length", 0))
-
-            with Progress(
-                TextColumn("[bold blue]{task.fields[filename]}", justify="right"),
-                BarColumn(bar_width=None),
-                "[progress.percentage]{task.percentage:>3.1f}%",
-                "•",
-                TransferSpeedColumn(),
-                "•",
-                TimeRemainingColumn(),
-                console=console,
-                transient=True,
-            ) as progress:
-                download_task = progress.add_task(
-                    "下载中", total=total_size, filename=filename
+        # This action is restricted to the library view, so the song must be local.
+        if self.query_one(Tree).cursor_node.data == "library":
+            song_data = next(
+                (s for s in self.library_songs if s.filepath == song_filepath), None
+            )
+            if song_data:
+                song_item = PlaylistItem(
+                    item_type="local",
+                    identifier=song_data.filepath,
+                    title=song_data.title,
+                    artist=song_data.artist,
+                    album=song_data.album,
+                    duration=song_data.duration,
                 )
-                with open(filename, "wb") as f:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                        progress.update(download_task, advance=len(chunk))
+                play_song(self, song_item)
 
-        console.print(
-            f"成功下载 '[bold cyan]{filename}[/bold cyan]'!", style="bold green"
-        )
-        # 传入完整的歌曲详情以添加元数据
-        add_metadata(filename, song_details, console)
-
-    except requests.exceptions.RequestException as e:
-        console.print(f"下载 '{filename}' 时出错: {e}", style="bold red")
-    except Exception as e:
-        console.print(f"发生意外错误: {e}", style="bold red")
-
-
-def clear_screen():
-    """Clears the terminal screen."""
-    os.system("cls" if os.name == "nt" else "clear")
-
-
-def interactive_mode(console):
-    """Runs the interactive song search and download mode."""
-    keyword = ""
-    page = 1
-
-    while True:
-        try:
-            if not keyword:
-                keyword = console.input(
-                    "[bold green]Enter song or artist name to search (or 'q' to quit):[/bold green] "
-                )
-                if keyword.lower() == "q":
-                    break
-                page = 1  # Reset page for new search
-
-            console.print(f"[dim]Searching for '{keyword}'...[/dim]")
-            songs = search_music(keyword, page=page)
-
-            if songs:
-                display_songs(songs, console, page)
-
-                prompt = "[bold yellow]Enter # to download, 'n' for next, 'p' for prev, 's' for new search, or 'q'uit:[/bold yellow] "
-                action = console.input(prompt).lower()
-
-                if action == "q":
-                    break
-                elif action == "n":
-                    page += 1
-                elif action == "p":
-                    if page > 1:
-                        page -= 1
-                    else:
-                        console.print(
-                            "You are already on the first page.", style="bold yellow"
-                        )
-                elif action == "s":
-                    keyword = ""  # Trigger new search
-                elif action.isdigit() and 1 <= int(action) <= len(songs):
-                    download_song(songs[int(action) - 1], console)
-                else:
-                    console.print("Invalid input.", style="bold red")
-
-            else:
-                if page > 1:
-                    console.print("No more results.", style="bold yellow")
-                    page -= 1  # Go back to the last valid page
-                else:
-                    console.print("No results found.", style="bold red")
-                    keyword = ""  # Allow a new search
-        except (KeyboardInterrupt, EOFError):
-            console.print("\nExiting...", style="bold red")
-            break
-        except UnicodeDecodeError:
-            console.print(
-                "\n[bold red]Encoding Error:[/bold red] Failed to read input. This can sometimes happen with certain terminals.",
-                style="bold red",
-            )
-            console.print("Please try entering the search term again.", style="yellow")
-            keyword = ""  # Reset keyword to allow re-entry
-            continue
-
-
-def handle_search_command(args, console):
-    """Handles the 'search' sub-command."""
-    console.print("[bold cyan]Search mode (dry-run).[/bold cyan]")
-
-    search_terms = []
-    if args.from_file:
-        try:
-            with open(args.from_file, "r", encoding="utf-8") as f:
-                search_terms.extend([line.strip() for line in f if line.strip()])
-            console.print(
-                f"Reading search terms from '[bold cyan]{args.from_file}[/bold cyan]'."
-            )
-        except FileNotFoundError:
-            console.print(
-                f"Error: Input file '[bold red]{args.from_file}[/bold red]' not found.",
-                style="bold red",
-            )
+    def action_add_to_playlist(self) -> None:
+        """Show the 'Add to Playlist' dialog for the selected song."""
+        table = self.query_one(DataTable)
+        if table.cursor_row < 0:
             return
 
-    if args.songs:
-        search_terms.extend(args.songs)
+        # This action is currently only for the local library view
+        if self.query_one(Tree).cursor_node.data != "library":
+            return
 
-    if not search_terms:
-        console.print(
-            "Error: No search terms provided. Use positional arguments or --from-file.",
-            style="bold red",
+        song_filepath = table.cursor_row_key
+        song = next(
+            (s for s in self.library_songs if s.filepath == song_filepath), None
         )
-        return
 
-    console.print(f"Searching for {len(search_terms)} term(s)...")
-    found_songs = []
-    for term in set(search_terms):  # Use set to avoid duplicate searches
-        console.print(
-            f"--> Searching for: [bold yellow]{term}[/bold yellow] (limit: {args.limit})"
+        if not song:
+            return
+
+        playlist_item = PlaylistItem(
+            item_type="local",
+            identifier=song.filepath,
+            title=song.title,
+            artist=song.artist,
+            album=song.album,
+            duration=song.duration,
         )
-        songs = search_music(term, page=1, limit=args.limit)
-        if songs:
-            console.print(f"    Found {len(songs)} song(s).")
-            found_songs.extend(songs)
+
+        def on_finish(message: str | None):
+            if message:
+                self.query_one("#playback-bar", Static).update(f"✅ {message}")
+                self.update_playlist_tree()
+
+        self.push_screen(
+            AddToPlaylistScreen(playlist_item, self.playlist_manager), on_finish
+        )
+
+    def action_playback_play_pause(self) -> None:
+        """Toggle play/pause of the current song."""
+        # For now, this just stops the music as pause is not implemented.
+        if self.player.is_playing:
+            self.player.stop()
+            self.playback_timer.pause()
+            playback_bar = self.query_one("#playback-bar", Static)
+            playback_bar.update("⏹️ Stopped")
+            self.current_playing_info = {}
         else:
-            console.print(f"    No songs found for '{term}'.", style="dim")
-
-    if not found_songs:
-        console.print("[bold red]No songs found in total. Nothing to save.[/bold red]")
-        return
-
-    save_to_file = False
-    if args.yes:
-        save_to_file = True
-    else:
-        console.print("\n--- Search Results Preview ---")
-        display_songs(found_songs[:10], console, page_number=1)
-        if len(found_songs) > 10:
-            console.print(f"... and {len(found_songs) - 10} more.")
-
-        action = console.input(
-            f"\n[bold yellow]Save all {len(found_songs)} found songs to '{args.output}'? (y/n): [/bold yellow]"
-        ).lower()
-        if action == "y":
-            save_to_file = True
-
-    if save_to_file:
-        # Remove duplicates based on song ID before saving
-        unique_songs = {song["id"]: song for song in found_songs}.values()
-
-        with open(args.output, "w", encoding="utf-8") as f:
-            for song in unique_songs:
-                f.write(json.dumps(song, ensure_ascii=False) + "\n")
-
-        console.print(
-            f"[bold green]Successfully saved {len(unique_songs)} unique songs to '[bold cyan]{args.output}[/bold cyan]'.[/bold green]"
-        )
-        console.print("You can now review this file and run 'execute' to download.")
-    else:
-        console.print(
-            "Operation cancelled by user. No file was saved.", style="bold yellow"
-        )
-
-
-def handle_execute_command(args, console):
-    """Handles the 'execute' sub-command."""
-    console.print(
-        f"[bold cyan]Execute mode. Reading songs from '{args.input}'.[/bold cyan]"
-    )
-
-    try:
-        with open(args.input, "r", encoding="utf-8") as f:
-            songs_to_download = [json.loads(line) for line in f]
-
-        if not songs_to_download:
-            console.print(
-                f"The file '{args.input}' is empty. Nothing to download.",
-                style="bold yellow",
-            )
-            return
-
-        console.print(
-            f"Found {len(songs_to_download)} songs in the playlist. Starting download..."
-        )
-        for song in songs_to_download:
-            download_song(song, console)
-        console.print("[bold green]All downloads completed.[/bold green]")
-
-    except FileNotFoundError:
-        console.print(
-            f"Error: The input file '[bold red]{args.input}[/bold red]' was not found.",
-            style="bold red",
-        )
-        console.print("Please run the 'search' command first to generate it.")
-    except json.JSONDecodeError as e:
-        console.print(
-            f"Error: Could not parse the file '[bold red]{args.input}[/bold red]'. Make sure it's a valid JSON Lines file.",
-            style="bold red",
-        )
-        console.print(f"Details: {e}")
-    except Exception as e:
-        console.print(f"An unexpected error occurred: {e}", style="bold red")
+            # We could try to replay the last song, but for now we do nothing
+            # if no song is active.
+            pass
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="A command-line tool to search and download music.",
-        epilog="Run without sub-commands to enter interactive mode.",
-    )
-    subparsers = parser.add_subparsers(dest="command", help="Available commands")
-
-    # Search command (dry-run)
-    parser_search = subparsers.add_parser(
-        "search", help="Search for songs and save results to a file (dry-run)."
-    )
-    parser_search.add_argument(
-        "songs", nargs="*", help="One or more search terms (song or artist)."
-    )
-    parser_search.add_argument(
-        "--from-file",
-        type=str,
-        help="Path to a text file with one search term per line.",
-    )
-    parser_search.add_argument(
-        "--limit",
-        type=int,
-        default=5,
-        help="Max number of songs to find per search term. Default: 5",
-    )
-    parser_search.add_argument(
-        "--output",
-        type=str,
-        default="playlist.jsonl",
-        help="Output file for the playlist. Default: playlist.jsonl",
-    )
-    parser_search.add_argument(
-        "-y",
-        "--yes",
-        action="store_true",
-        help="Directly save to file without interactive confirmation.",
-    )
-    parser_search.set_defaults(func=handle_search_command)
-
-    # Execute command
-    parser_execute = subparsers.add_parser(
-        "execute", help="Download songs from a specified playlist file."
-    )
-    parser_execute.add_argument(
-        "input",
-        nargs="?",
-        default="playlist.jsonl",
-        help="Playlist file to download from (default: playlist.jsonl).",
-    )
-    parser_execute.set_defaults(func=handle_execute_command)
-
-    args = parser.parse_args()
-    console = Console()
-
-    if hasattr(args, "func"):
-        args.func(args, console)
-    else:
-        console.print(
-            "[bold cyan]Welcome to the Music Downloader! Running in interactive mode.[/bold cyan]"
-        )
-        interactive_mode(console)
+    """Run the Textual application."""
+    app = MusicApp()
+    app.run()
 
 
 if __name__ == "__main__":

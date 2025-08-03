@@ -1,0 +1,24 @@
+#left-pane {
+    width: 30;
+    min-width: 20;
+    border-right: solid $accent;
+}
+
+#main-pane {
+    width: 1fr; /* Takes up the remaining space */
+}
+
+#playback-bar {
+    height: 1;
+    text-align: center;
+    background: $primary-darken-1;
+}
+
+DataTable {
+    height: 1fr;
+}
+
+Tree {
+    height: 1fr;
+    padding: 1;
+}

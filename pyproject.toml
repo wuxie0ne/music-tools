@@ -13,8 +13,34 @@ dependencies = [
     "mutagen>=1.47.0",
     "requests>=2.32.4",
     "rich",
+    "textual",
 ]
 
 [project.scripts]
 music-tools = "music_tools.main:main"
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-mock",
+    "ruff",
+    "black",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.black]
+line-length = 88
+target-version = ['py38']
+
+[tool.ruff]
+line-length = 88
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+
 
