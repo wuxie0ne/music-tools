@@ -14,11 +14,19 @@
 
 ## 安装与运行
 
-1. **安装依赖**
+1. **安装依赖与工具**
+
+   推荐使用 uv 工具管理依赖和安装：
 
    ```bash
-   pip install requests rich mutagen
+   # 同步项目依赖
+   uv sync
+
+   # 安装项目为可执行工具
+   uv tool install
    ```
+
+   安装后可通过 `music-tools` 命令直接运行。
 
 2. **运行模式**
 

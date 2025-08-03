@@ -10,21 +10,30 @@
 
 ### 运行
 
-以交互模式运行工具：
+项目已重构为支持 uv 工具安装的结构。
+
+使用 uv 工具安装项目：
 
 ```
-python main.py
+cd /home/alex/src/music-tools
+uv sync
+uv tool install
 ```
 
-以命令模式运行：
+安装后，可通过以下命令运行：
 
+- 交互模式：
+```
+music-tools
+```
+
+- 命令模式：
 ```
 # 搜索歌曲并保存到 playlist.jsonl
-cd /home/alex/src/music-tools
-python main.py search "王力宏"
+music-tools search "王力宏"
 
 # 下载 playlist.jsonl 中的所有歌曲
-python main.py execute
+music-tools execute
 ```
 
 ### 运行测试
