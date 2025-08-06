@@ -15,6 +15,7 @@ class LocalSong(NamedTuple):
     album: str
     duration: int  # in seconds
     filepath: str
+    lyrics: str | None
 
 
 SUPPORTED_EXTENSIONS = {".mp3", ".flac"}
@@ -25,6 +26,19 @@ def format_duration(seconds: int) -> str:
     minutes = seconds // 60
     seconds %= 60
     return f"{minutes:02d}:{seconds:02d}"
+
+
+def _extract_lyrics(audio) -> str | None:
+    """Helper to extract lyrics from a mutagen object."""
+    # For MP3 files with ID3 tags
+    if isinstance(audio, mutagen.mp3.MP3):
+        uslt_tags = [v for k, v in audio.items() if k.startswith("USLT")]
+        if uslt_tags:
+            return uslt_tags[0].text
+    # For FLAC/Vorbis/etc.
+    elif "lyrics" in audio:
+        return audio["lyrics"][0]
+    return None
 
 
 def _extract_tag(audio, keys):
@@ -49,13 +63,15 @@ def scan_library(library_path: str) -> Iterator[LocalSong]:
         if file_path.suffix.lower() in SUPPORTED_EXTENSIONS:
             try:
                 audio = mutagen.File(file_path, easy=True)
-                if not audio:
+                full_audio = mutagen.File(file_path) # For tags not in easy=True
+                if not (audio and full_audio):
                     continue
 
                 title = _extract_tag(audio, ["title", "TIT2"])
                 artist = _extract_tag(audio, ["artist", "TPE1"])
                 album = _extract_tag(audio, ["album", "TALB"])
                 duration = int(audio.info.length)
+                lyrics = _extract_lyrics(full_audio)
 
                 if title == "Unknown" and artist == "Unknown":
                     # If we can't get basic info, use the filename as title
@@ -67,6 +83,7 @@ def scan_library(library_path: str) -> Iterator[LocalSong]:
                     album=album,
                     duration=duration,
                     filepath=str(file_path),
+                    lyrics=lyrics,
                 )
             except mutagen.MutagenError:
                 # This file might be corrupted or not a valid audio file

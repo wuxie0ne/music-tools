@@ -12,8 +12,8 @@ classifiers = [
 dependencies = [
     "mutagen>=1.47.0",
     "requests>=2.32.4",
-    "rich",
-    "textual",
+    "rich>=13.0.0",
+    "textual>=0.58.0",
 ]
 
 [project.scripts]
@@ -23,6 +23,7 @@ music-tools = "music_tools.main:main"
 test = [
     "pytest",
     "pytest-mock",
+    "pytest-asyncio",
     "ruff",
     "black",
 ]

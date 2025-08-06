@@ -1,24 +1,121 @@
-#left-pane {
-    width: 30;
-    min-width: 20;
-    border-right: solid $accent;
+Screen {
+    layout: vertical;
 }
 
-#main-pane {
-    width: 1fr; /* Takes up the remaining space */
+#input-container {
+    dock: top;
+    height: 3;
+    layout: grid;
+    grid-size: 3;
+    grid-columns: auto 1fr auto;
+    background: $surface;
+    border: round white;
+    padding: 0 1;
 }
 
-#playback-bar {
-    height: 1;
-    text-align: center;
-    background: $primary-darken-1;
+#input-prompt {
+    width: auto;
+    height: 100%;
+    content-align: center middle;
+}
+
+Input {
+    width: 1fr;
+    border: none;
+    background: transparent;
+}
+
+#search-mode-icon {
+    width: auto;
+    height: 100%;
+    content-align: center middle;
 }
 
 DataTable {
     height: 1fr;
+    width: 100%;
 }
 
-Tree {
-    height: 1fr;
+#footer {
+    dock: bottom;
+    height: 1;
+}
+
+#playback-bar-container {
+    height: 1;
+    layout: grid;
+    grid-size: 6;
+    /* song-icon | song-info | lyrics-icon | lyrics-text | progress-container | mode-icon */
+    grid-columns: auto 1fr auto 1fr 1fr auto;
+    grid-gutter: 1 2;
+    background: $surface;
+    padding: 0 1;
+    align: center middle;
+    transition: grid-columns 500ms in_out_cubic;
+}
+
+#playback-bar-container.lyrics-hidden {
+    /* Hide lyrics icon & text, and give their space to song info and progress */
+    grid-columns: auto 1.5fr 0 0 1.5fr auto;
+}
+
+#progress-container {
+    layout: grid;
+    grid-columns: auto 1fr;
+    grid-gutter: 1;
+    align: center middle;
+}
+
+#song-icon, #lyrics-icon, #timer-icon {
+    width: auto;
+}
+
+#song-info {
+    width: auto;
+    content-align: left middle;
+}
+
+#lyrics-text {
+    overflow: hidden;
+    height: 100%;
+    content-align: left middle;
+}
+
+#progress-display {
+    width: 1fr;
+    content-align: right middle;
+}
+
+#playback-mode-icon {
+    width: auto;
+    content-align: center middle;
+}
+
+/* Help Screen Styles */
+#help-container {
+    align: center middle;
+    width: 60;
+    height: auto;
+    max-height: 80%;
+    background: $surface-darken-1;
+    border: thick $primary;
     padding: 1;
+}
+
+.help-title {
+    content-align: center top;
+    width: 100%;
+    height: auto;
+    margin-bottom: 1;
+}
+
+.help-table {
+    height: 1fr;
+}
+
+.help-footer {
+    content-align: center bottom;
+    width: 100%;
+    height: auto;
+    margin-top: 1;
 }
