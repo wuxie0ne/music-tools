@@ -2,7 +2,9 @@
 import json
 import os
 from pathlib import Path
-from typing import Dict, List, TypedDict
+from typing import Dict, List, Union
+
+from music_tools.library.local import LocalSong, OnlineSong
 
 
 class PlaylistManagerException(Exception):
@@ -15,18 +17,6 @@ class PlaylistNotFoundException(PlaylistManagerException):
 
 class SongAlreadyExistsException(PlaylistManagerException):
     """Raised when a song already exists in a playlist."""
-
-
-
-class PlaylistItem(TypedDict):
-    """Represents a single item in a playlist."""
-
-    item_type: str  # 'local' or 'netease'
-    identifier: str  # Filepath for 'local', song ID for 'netease'
-    title: str
-    artist: str
-    album: str
-    duration: int  # in seconds
 
 
 class PlaylistManager:
@@ -44,15 +34,22 @@ class PlaylistManager:
 
         self.config_path.mkdir(parents=True, exist_ok=True)
         self.playlists_file = self.config_path / "playlists.json"
-        self.playlists: Dict[str, List[PlaylistItem]] = self._load_playlists()
+        # The dict now stores a list of identifiers (filepaths or song IDs)
+        self.playlists: Dict[str, List[str]] = self._load_playlists()
 
-    def _load_playlists(self) -> Dict[str, List[PlaylistItem]]:
-        """Loads playlists from the JSON file."""
+    def _load_playlists(self) -> Dict[str, List[str]]:
+        """Loads playlist identifiers from the JSON file."""
         if not self.playlists_file.exists():
             return {"Favorites": []}  # Default playlist
         try:
             with open(self.playlists_file, "r") as f:
-                return json.load(f)
+                data = json.load(f)
+                # Basic validation to ensure it's in the expected format
+                if isinstance(data, dict) and all(
+                    isinstance(k, str) and isinstance(v, list) for k, v in data.items()
+                ):
+                    return data
+                return {"Favorites": []}
         except (json.JSONDecodeError, IOError):
             return {"Favorites": []}
 
@@ -69,8 +66,10 @@ class PlaylistManager:
         """Returns a list of all playlist names."""
         return list(self.playlists.keys())
 
-    def get_playlist_songs(self, name: str) -> List[PlaylistItem]:
-        """Returns the list of songs for a given playlist."""
+    def get_playlist_identifiers(self, name: str) -> List[str]:
+        """Returns the list of song identifiers for a given playlist."""
+        if name not in self.playlists:
+            raise PlaylistNotFoundException(f"Playlist '{name}' not found.")
         return self.playlists.get(name, [])
 
     def create_playlist(self, name: str) -> bool:
@@ -81,20 +80,20 @@ class PlaylistManager:
         self._save_playlists()
         return True
 
-    def add_to_playlist(self, playlist_name: str, song: PlaylistItem):
-        """Adds a song to a specified playlist."""
+    def add_to_playlist(self, playlist_name: str, song: Union[LocalSong, OnlineSong]):
+        """Adds a song to a specified playlist by its identifier."""
         if playlist_name not in self.playlists:
             raise PlaylistNotFoundException(f"Playlist '{playlist_name}' not found.")
 
+        identifier = str(song.filepath) if isinstance(song, LocalSong) else str(song.id)
+
         # Avoid duplicates
-        if any(
-            s["identifier"] == song["identifier"] for s in self.playlists[playlist_name]
-        ):
+        if identifier in self.playlists[playlist_name]:
             raise SongAlreadyExistsException(
-                f"Song '{song['title']}' already in playlist '{playlist_name}'."
+                f"Song '{song.title}' already in playlist '{playlist_name}'."
             )
 
-        self.playlists[playlist_name].append(song)
+        self.playlists[playlist_name].append(identifier)
         self._save_playlists()
 
     def remove_from_playlist(self, playlist_name: str, song_identifier: str) -> bool:
@@ -104,9 +103,7 @@ class PlaylistManager:
 
         original_length = len(self.playlists[playlist_name])
         self.playlists[playlist_name] = [
-            s
-            for s in self.playlists[playlist_name]
-            if s["identifier"] != song_identifier
+            s_id for s_id in self.playlists[playlist_name] if s_id != song_identifier
         ]
 
         if len(self.playlists[playlist_name]) < original_length:

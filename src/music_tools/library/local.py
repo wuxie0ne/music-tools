@@ -1,10 +1,27 @@
 # src/music_tools/library/local.py
 
 import os
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator, NamedTuple
+from typing import Iterator, List, NamedTuple, Optional, Tuple
 
 import mutagen
+
+from music_tools.lyrics import parse_lrc
+
+
+@dataclass
+class OnlineSong:
+    """Represents a song from an online source like Netease Music."""
+
+    id: int
+    title: str
+    artist: str
+    album: str
+    duration: int  # in seconds
+    album_cover_url: Optional[str] = None
+    play_url: Optional[str] = None
+    lyrics: List[Tuple[float, str]] = field(default_factory=list)
 
 
 class LocalSong(NamedTuple):
@@ -15,7 +32,19 @@ class LocalSong(NamedTuple):
     album: str
     duration: int  # in seconds
     filepath: str
-    lyrics: str | None
+    lyrics: List[Tuple[float, str]]
+
+
+class ApiSongDetails(NamedTuple):
+    """Represents the details for a song from the API."""
+
+    url: str
+
+
+class ApiLyricData(NamedTuple):
+    """Represents the lyric data for a song from the API."""
+
+    lyric: str
 
 
 SUPPORTED_EXTENSIONS = {".mp3", ".flac"}
@@ -63,7 +92,7 @@ def scan_library(library_path: str) -> Iterator[LocalSong]:
         if file_path.suffix.lower() in SUPPORTED_EXTENSIONS:
             try:
                 audio = mutagen.File(file_path, easy=True)
-                full_audio = mutagen.File(file_path) # For tags not in easy=True
+                full_audio = mutagen.File(file_path)  # For tags not in easy=True
                 if not (audio and full_audio):
                     continue
 
@@ -71,7 +100,9 @@ def scan_library(library_path: str) -> Iterator[LocalSong]:
                 artist = _extract_tag(audio, ["artist", "TPE1"])
                 album = _extract_tag(audio, ["album", "TALB"])
                 duration = int(audio.info.length)
-                lyrics = _extract_lyrics(full_audio)
+
+                lyrics_text = _extract_lyrics(full_audio)
+                lyrics = parse_lrc(lyrics_text) if lyrics_text else []
 
                 if title == "Unknown" and artist == "Unknown":
                     # If we can't get basic info, use the filename as title

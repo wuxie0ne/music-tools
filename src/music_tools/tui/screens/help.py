@@ -1,7 +1,8 @@
-from textual.screen import ModalScreen
-from textual.widgets import DataTable, Static
 from textual.app import ComposeResult
 from textual.containers import Vertical
+from textual.screen import ModalScreen
+from textual.widgets import DataTable, Static
+
 
 class HelpScreen(ModalScreen):
     """A modal screen that displays a help table of key bindings."""
@@ -16,7 +17,7 @@ class HelpScreen(ModalScreen):
         """Set up the help table."""
         table = self.query_one(DataTable)
         table.add_columns("按键", "功能")
-        
+
         bindings = [
             ("q", "退出应用"),
             ("space", "暂停 / 继续播放"),
@@ -36,7 +37,7 @@ class HelpScreen(ModalScreen):
             ("k / ↑", "向上导航"),
             ("f1", "显示/隐藏此帮助菜单"),
         ]
-        
+
         table.add_rows(bindings)
 
     def on_key(self, event) -> None:

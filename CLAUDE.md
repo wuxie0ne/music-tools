@@ -60,6 +60,7 @@ uv run pytest
     uv run ruff check --fix .
     ```
 
+- 你较大的修改和调整，都应该最后使用 uv run ruff 进行检查和格式化
 
 ## TUI 交互快捷键
 

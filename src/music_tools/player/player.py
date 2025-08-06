@@ -1,9 +1,9 @@
 # src/music_tools/player/player.py
 
 import shutil
+import signal
 import subprocess
 import time
-import signal
 
 
 class Player:
@@ -14,7 +14,7 @@ class Player:
         self._executable = self._find_executable()
         self.current_song_duration: int = 0
         self.current_song_path: str | None = None
-        
+
         self.playback_start_time: float = 0
         self.paused_elapsed_time: float = 0
         self.is_paused: bool = False
@@ -31,7 +31,11 @@ class Player:
     @property
     def is_playing(self) -> bool:
         """Check if audio is currently playing (process is running and not paused)."""
-        return self._process is not None and self._process.poll() is None and not self.is_paused
+        return (
+            self._process is not None
+            and self._process.poll() is None
+            and not self.is_paused
+        )
 
     def play(self, target: str, duration: int = 0, start_from: int = 0) -> bool:
         """
@@ -43,13 +47,18 @@ class Player:
 
         if self.is_playing or self.is_paused:
             self.stop()
-        
+
         self.current_song_path = target
         self.current_song_duration = duration
 
         command = [
-            self._executable, "-v", "quiet", "-nodisp", "-autoexit",
-            "-ss", str(start_from),
+            self._executable,
+            "-v",
+            "quiet",
+            "-nodisp",
+            "-autoexit",
+            "-ss",
+            str(start_from),
             target,
         ]
 
@@ -58,7 +67,7 @@ class Player:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        
+
         self.playback_start_time = time.time() - start_from
         self.paused_elapsed_time = 0
         self.is_paused = False
@@ -124,18 +133,20 @@ class Player:
             return
 
         current_progress, total_duration = self.get_current_progress()
-        
+
         new_position = max(0, current_progress + offset)
         if total_duration > 0:
-            new_position = min(new_position, total_duration - 1) if total_duration > 1 else 0
+            new_position = (
+                min(new_position, total_duration - 1) if total_duration > 1 else 0
+            )
 
         was_paused = self.is_paused
-        
+
         if self.is_playing or self.is_paused:
             self.stop()
 
         self.play(path_to_play, total_duration, start_from=new_position)
-        
+
         if was_paused:
-            time.sleep(0.1) # Give ffplay a moment to start before pausing
+            time.sleep(0.1)  # Give ffplay a moment to start before pausing
             self.pause()

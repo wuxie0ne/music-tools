@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from music_tools.library.local import LocalSong, OnlineSong
 from music_tools.playlist.manager import (
-    PlaylistItem,
     PlaylistManager,
     SongAlreadyExistsException,
 )
@@ -18,22 +18,34 @@ def temp_playlist_manager(tmp_path: Path) -> PlaylistManager:
 
 
 @pytest.fixture
-def sample_song() -> PlaylistItem:
-    """Fixture to provide a sample song item."""
-    return PlaylistItem(
-        item_type="local",
-        identifier="/path/to/song.mp3",
-        title="Test Song",
-        artist="Test Artist",
-        album="Test Album",
+def sample_local_song() -> LocalSong:
+    """Fixture to provide a sample LocalSong."""
+    return LocalSong(
+        filepath="/path/to/local.mp3",
+        title="Local Song",
+        artist="Local Artist",
+        album="Local Album",
         duration=180,
+        lyrics=[],
+    )
+
+
+@pytest.fixture
+def sample_online_song() -> OnlineSong:
+    """Fixture to provide a sample OnlineSong."""
+    return OnlineSong(
+        id=12345,
+        title="Online Song",
+        artist="Online Artist",
+        album="Online Album",
+        duration=200,
     )
 
 
 def test_initialization(temp_playlist_manager: PlaylistManager):
     """Test that the PlaylistManager initializes correctly."""
     assert temp_playlist_manager.get_playlist_names() == ["Favorites"]
-    assert temp_playlist_manager.get_playlist_songs("Favorites") == []
+    assert temp_playlist_manager.get_playlist_identifiers("Favorites") == []
 
 
 def test_create_playlist(temp_playlist_manager: PlaylistManager):
@@ -43,68 +55,67 @@ def test_create_playlist(temp_playlist_manager: PlaylistManager):
     assert temp_playlist_manager.create_playlist("My Hits") is False  # Already exists
 
 
-def test_add_to_playlist(
-    temp_playlist_manager: PlaylistManager, sample_song: PlaylistItem
+def test_add_local_song_to_playlist(
+    temp_playlist_manager: PlaylistManager, sample_local_song: LocalSong
 ):
-    """Test adding a song to a playlist."""
+    """Test adding a local song to a playlist."""
     temp_playlist_manager.create_playlist("Rock")
+    temp_playlist_manager.add_to_playlist("Rock", sample_local_song)
 
-    # Call the method without checking the return value
-    temp_playlist_manager.add_to_playlist("Rock", sample_song)
-
-    songs = temp_playlist_manager.get_playlist_songs("Rock")
-    assert len(songs) == 1
-    assert songs[0]["title"] == "Test Song"
+    identifiers = temp_playlist_manager.get_playlist_identifiers("Rock")
+    assert len(identifiers) == 1
+    assert identifiers[0] == sample_local_song.filepath
 
     # Test adding the same song again (should raise an exception)
     with pytest.raises(SongAlreadyExistsException):
-        temp_playlist_manager.add_to_playlist("Rock", sample_song)
+        temp_playlist_manager.add_to_playlist("Rock", sample_local_song)
 
-    # The song count should still be 1
-    assert len(temp_playlist_manager.get_playlist_songs("Rock")) == 1
 
+def test_add_online_song_to_playlist(
+    temp_playlist_manager: PlaylistManager, sample_online_song: OnlineSong
+):
+    """Test adding an online song to a playlist."""
+    temp_playlist_manager.create_playlist("Pop")
+    temp_playlist_manager.add_to_playlist("Pop", sample_online_song)
+
+    identifiers = temp_playlist_manager.get_playlist_identifiers("Pop")
+    assert len(identifiers) == 1
+    assert identifiers[0] == str(sample_online_song.id)
 
 
 def test_remove_from_playlist(
-    temp_playlist_manager: PlaylistManager, sample_song: PlaylistItem
+    temp_playlist_manager: PlaylistManager, sample_local_song: LocalSong
 ):
     """Test removing a song from a playlist."""
-    # First, add a song to remove
-    temp_playlist_manager.create_playlist("Favorites")
-    temp_playlist_manager.add_to_playlist("Favorites", sample_song)
-    assert len(temp_playlist_manager.get_playlist_songs("Favorites")) == 1
+    temp_playlist_manager.add_to_playlist("Favorites", sample_local_song)
+    assert len(temp_playlist_manager.get_playlist_identifiers("Favorites")) == 1
 
-    # Now, remove it and check return value and state
     assert (
         temp_playlist_manager.remove_from_playlist(
-            "Favorites", sample_song["identifier"]
+            "Favorites", sample_local_song.filepath
         )
         is True
     )
-    assert len(temp_playlist_manager.get_playlist_songs("Favorites")) == 0
+    assert len(temp_playlist_manager.get_playlist_identifiers("Favorites")) == 0
 
-    # Test removing a non-existent song, should return False
     assert (
         temp_playlist_manager.remove_from_playlist("Favorites", "non_existent_id")
         is False
     )
 
 
-def test_persistence(tmp_path: Path, sample_song: PlaylistItem):
+def test_persistence(tmp_path: Path, sample_local_song: LocalSong):
     """Test that playlist data is saved and loaded correctly."""
-    # Step 1: Create a manager, add a playlist and a song, which triggers a save
     manager1 = PlaylistManager(config_dir=tmp_path)
     manager1.create_playlist("Chill")
-    manager1.add_to_playlist("Chill", sample_song)
+    manager1.add_to_playlist("Chill", sample_local_song)
 
-    # Step 2: Create a new manager instance using the same directory
     manager2 = PlaylistManager(config_dir=tmp_path)
 
-    # Assert that the data was loaded correctly
     assert manager2.get_playlist_names() == ["Favorites", "Chill"]
-    songs = manager2.get_playlist_songs("Chill")
-    assert len(songs) == 1
-    assert songs[0]["identifier"] == sample_song["identifier"]
+    identifiers = manager2.get_playlist_identifiers("Chill")
+    assert len(identifiers) == 1
+    assert identifiers[0] == sample_local_song.filepath
 
 
 def test_load_from_corrupted_file(tmp_path: Path):
@@ -116,4 +127,4 @@ def test_load_from_corrupted_file(tmp_path: Path):
     manager = PlaylistManager(config_dir=tmp_path)
     # Should fall back to the default empty 'Favorites' playlist
     assert manager.get_playlist_names() == ["Favorites"]
-    assert manager.get_playlist_songs("Favorites") == []
+    assert manager.get_playlist_identifiers("Favorites") == []

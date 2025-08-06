@@ -11,38 +11,61 @@ from music_tools.library import local
 # We don't have real audio files, so we will mock the mutagen.File part
 @pytest.fixture
 def mock_mutagen_file(mocker):
-    """Fixture to mock mutagen.File to avoid needing real audio files."""
+    """
+    Fixture to mock mutagen.File, handling both easy=True and easy=False calls.
+    This version ensures that isinstance checks work correctly for MP3 files.
+    """
 
-    def mock_file_loader(filepath, easy=True):
-        path_str = str(filepath)
+    import mutagen.mp3
+    # We need a stand-in for the class for `isinstance` to work with mocks
+    class MockMp3(mutagen.mp3.MP3):
+        pass
 
-        # Simulate a file that is corrupted or cannot be read
-        if "another_song.mp3" in path_str:
+    def side_effect(filepath, easy=False):
+        filename = Path(filepath).name
+
+        file_db = {
+            "song1.mp3": {
+                "length": 180,
+                "easy_tags": {"title": ["Song One"], "artist": ["Artist A"], "album": ["Album X"]},
+                "full_tags": {"USLT::'eng'": mocker.MagicMock(text="lrc1")},
+            },
+            "song2.flac": {
+                "length": 240,
+                "easy_tags": {"title": ["Song Two"], "artist": ["Artist B"], "album": ["Album Y"]},
+                "full_tags": {"lyrics": ["lrc2"]},
+            },
+            "no_tags.mp3": {"length": 120, "easy_tags": {}, "full_tags": {}},
+        }
+
+        if "another_song.mp3" in str(filepath):
             raise mutagen.MutagenError("Cannot open file")
 
-        mock_audio = mocker.MagicMock()
-        data = {}
+        if filename not in file_db:
+            return None
 
-        if "song1.mp3" in path_str:
-            mock_audio.info.length = 180
-            data = {"title": ["Song One"], "artist": ["Artist A"], "album": ["Album X"]}
-        elif "song2.flac" in path_str:
-            mock_audio.info.length = 240
-            data = {"title": ["Song Two"], "artist": ["Artist B"], "album": ["Album Y"]}
-        elif "no_tags.mp3" in path_str:
-            mock_audio.info.length = 120
-            data = {}  # Empty dict simulates a file with no tags
-        else:
-            # This case should not be hit by the files created in the test
-            raise mutagen.MutagenError("Mock received an unexpected file")
+        file_data = file_db[filename]
+        
+        # Use a real (but empty) instance of our mock class for isinstance
+        mock_audio = MockMp3() if ".mp3" in filename else mocker.MagicMock()
+        
+        # Add the necessary attributes and methods that are accessed in the code
+        mock_audio.info = mocker.MagicMock()
+        mock_audio.info.length = file_data["length"]
+        
+        tags_to_serve = file_data["easy_tags"] if easy else file_data["full_tags"]
 
-        # Configure the mock to behave like a dictionary for tag access
-        mock_audio.__contains__.side_effect = data.__contains__
-        mock_audio.__getitem__.side_effect = data.__getitem__
+        # Configure mock to behave like a dictionary
+        def get_item(key):
+            return tags_to_serve.get(key)
+        
+        mock_audio.__getitem__ = mocker.MagicMock(side_effect=get_item)
+        mock_audio.__contains__ = mocker.MagicMock(side_effect=tags_to_serve.__contains__)
+        mock_audio.items = mocker.MagicMock(return_value=tags_to_serve.items())
 
         return mock_audio
 
-    return mocker.patch("music_tools.library.local.mutagen.File", new=mock_file_loader)
+    mocker.patch("music_tools.library.local.mutagen.File", side_effect=side_effect)
 
 
 def test_scan_library_with_files(tmp_path: Path, mock_mutagen_file, mocker):
